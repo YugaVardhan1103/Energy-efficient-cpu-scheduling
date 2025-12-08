@@ -1,0 +1,227 @@
+#include <unistd.h>
+#include <sys/types.h>
+#include <sys/uio.h>
+#include <string.h>
+#include <vector>
+#include <numeric>
+#include <algorithm>
+using namespace std;
+
+// ----------------------- SYSTEM CALL I/O HELPERS -----------------------
+void printStr(const char* s){
+    write(1, s, strlen(s));
+}
+
+void printIntDouble(double x){
+    char buf[64];
+    int len = snprintf(buf, sizeof(buf), "%.2f", x);
+    write(1, buf, len);
+}
+
+void printInt(long long x){
+    char buf[32];
+    int i = 30;
+    buf[31] = '\0';
+
+    if(x == 0){
+        write(1, "0", 1);
+        return;
+    }
+
+    bool neg = x < 0;
+    if(neg) x = -x;
+
+    while(x > 0){
+        buf[i--] = '0' + (x % 10);
+        x /= 10;
+    }
+
+    if(neg) buf[i--] = '-';
+
+    write(1, buf + i + 1, strlen(buf + i + 1));
+}
+
+// -------- FIXED readInt(): ignores P1:, letters, spaces, etc --------
+int readInt() {
+    char c;
+    int x = 0;
+    int neg = 0;
+    bool started = false;
+
+    while (read(0, &c, 1) == 1) {
+
+        if (c == '-') {
+            neg = 1;
+            continue;
+        }
+
+        if (c >= '0' && c <= '9') {
+            x = x * 10 + (c - '0');
+            started = true;
+        }
+        else if (started) {
+            break;  // number finished
+        }
+    }
+
+    return neg ? -x : x;
+}
+
+// ----------------------- RESULT STRUCT -----------------------
+struct Result {
+    vector<int> ct, wt, tat, rt;
+    int contextSwitches;
+    double avgWT, avgTAT, avgRT, energyUsed;
+};
+
+// ----------------------- ROUND ROBIN -----------------------
+Result round_robin(vector<int> at, vector<int> bt, int n, int tq, bool modified){
+
+    vector<int> rem = bt;
+    vector<int> ct(n), rt(n, -1), tat(n), wt(n);
+    vector<bool> inq(n, false);
+
+    vector<int> q;
+    int front = 0;
+
+    int time = *min_element(at.begin(), at.end());
+    int contextSwitches = 0;
+    double energy = 0;
+
+    for(int i=0;i<n;i++){
+        if(at[i] == time){
+            q.push_back(i);
+            inq[i] = true;
+        }
+    }
+
+    while(front < q.size()){
+
+        int exec = q[front++];
+        inq[exec] = false;
+        contextSwitches++;
+
+        int currentQuantum = tq;
+        double power = 8;
+
+        if(modified){
+            int qs = (q.size() - front) + 1;
+
+            if(qs <= 2){
+                currentQuantum = 4;
+                power = 1;
+            } else if(qs <= 4){
+                currentQuantum = 3;
+                power = 4;
+            } else {
+                currentQuantum = 2;
+                power = 8;
+            }
+        }
+
+        if(rt[exec] == -1)
+            rt[exec] = time - at[exec];
+
+        int run = min(currentQuantum, rem[exec]);
+        rem[exec] -= run;
+        time += run;
+        energy += (power * run);
+
+        for(int i=0;i<n;i++){
+            if(at[i] <= time && rem[i] > 0 && !inq[i]){
+                q.push_back(i);
+                inq[i] = true;
+            }
+        }
+
+        if(rem[exec] > 0){
+            q.push_back(exec);
+            inq[exec] = true;
+        } else {
+            ct[exec] = time;
+        }
+    }
+
+    Result R;
+    R.ct = ct;
+    R.rt = rt;
+    R.contextSwitches = contextSwitches;
+    R.energyUsed = energy;
+
+    double sumWT = 0, sumTAT = 0, sumRT = 0;
+
+    for(int i=0;i<n;i++){
+        tat[i] = ct[i] - at[i];
+        wt[i] = tat[i] - bt[i];
+        sumWT += wt[i];
+        sumTAT += tat[i];
+        sumRT += rt[i];
+    }
+
+    R.tat = tat;
+    R.wt = wt;
+    R.avgWT = sumWT/n;
+    R.avgTAT = sumTAT/n;
+    R.avgRT = sumRT/n;
+
+    return R;
+}
+
+// ----------------------- PRINT RESULT -----------------------
+void printResult(Result R, vector<int> at, vector<int> bt, const char* name){
+
+    printStr("\n========== ");
+    printStr(name);
+    printStr(" ==========\n");
+
+    printStr("PID\tAT\tBT\tCT\tTAT\tWT\tRT\n");
+
+    for(int i=0;i<at.size();i++){
+        printStr("P"); printInt(i+1); printStr("\t");
+        printInt(at[i]); printStr("\t");
+        printInt(bt[i]); printStr("\t");
+        printInt(R.ct[i]); printStr("\t");
+        printInt(R.tat[i]); printStr("\t");
+        printInt(R.wt[i]); printStr("\t");
+        printInt(R.rt[i]); printStr("\n");
+    }
+
+    printStr("\nAverage Waiting Time: "); printIntDouble(R.avgWT); printStr("\n");
+    printStr("Average Turnaround Time: "); printIntDouble(R.avgTAT); printStr("\n");
+    printStr("Average Response Time: "); printIntDouble(R.avgRT); printStr("\n");
+
+    printStr("Context Switches: "); printInt(R.contextSwitches); printStr("\n");
+
+    printStr("Energy Used: "); printIntDouble(R.energyUsed); printStr("\n");
+}
+
+// ----------------------- MAIN -----------------------
+int main(){
+
+    printStr("Enter number of processes: ");
+    int n = readInt();
+
+    vector<int> at(n), bt(n);
+
+    printStr("Enter AT and BT for each process:\n");
+    for(int i=0;i<n;i++){
+        printStr("P"); printInt(i+1); printStr(": ");
+        at[i] = readInt();
+        bt[i] = readInt();
+    }
+
+    printStr("Enter time quantum for normal RR: ");
+    int tq = readInt();
+
+    Result normalRR = round_robin(at, bt, n, tq, false);
+    Result energyRR = round_robin(at, bt, n, tq, true);
+
+    printResult(normalRR, at, bt, "Standard Round Robin");
+    printResult(energyRR, at, bt, "Energy Efficient Round Robin");
+
+    printStr("\n===== Comparison =====\nEnergy saved: ");
+    printIntDouble(normalRR.energyUsed - energyRR.energyUsed);
+    printStr("\n");
+
+    return 0;
+}
